@@ -1,5 +1,745 @@
 ---
-title: "paper"
-format: html
+title: "Global Elo Model for European Football"
+subtitle: "A Multi-Season, Cross-League Rating and Prediction Framework"
+author: 
+  - John Zhang
+thanks: "Code and data are available at: https://github.com/Clearsky21z/Soccer_Elo_Model"
+date: today
+date-format: long
+abstract: ""
+format: pdf
+toc: true
+number-sections: true
+bibliography: references.bib
+
 ---
+
+\newpage
+
+```{r library, echo=FALSE, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(here)
+library(knitr)
+library(stringr)
+library(knitr)
+library(tibble)
+library(ggrepel)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(scales)
+```
+
+
+# Introduction{#sec-introduction}
+
+Measuring club strength across European football leagues is difficult. Domestic league tables reflect performance within a single competition and season, while UEFA country and club coefficients aggregate results across tournaments but adjust slowly and are not directly interpretable as team-level strengths. For tasks such as forecasting match outcomes or comparing clubs across leagues, a single, dynamically updated rating system is preferable—provided that it can place teams from the “Big Five” leagues (England, Spain, Italy, Germany, France) on a common scale, respond to new information in the current season, incorporate historical performance while discounting older seasons, and be tuned using a proper predictive scoring rule rather than rule-of-thumb choices.
+
+This paper develops a global multi-season Elo model for domestic league matches in the Big Five leagues from the 2015/16 season up to the 2025/26 season (cut off at 15 December 2025). The specification builds on the Elo framework used in sports analytics and football modelling, as described in @citebeggs2024soccer and @citeegidi2026predictive, and extends it in three main directions. First, season-specific UEFA country coefficients are used as league-level offsets so that teams from stronger leagues are, on average, rated higher than teams from weaker leagues. Second, ratings are shrunk toward a global baseline between seasons, and newly promoted teams start below that baseline to reflect the typical gap between incumbent top-flight clubs and new entrants. Third, older seasons are down-weighted through an explicit relevance function, and rating updates for the current season use an inflated $K$-factor so that ratings respond more strongly to recent results.
+
+Model hyperparameters are chosen by minimising a relevance-weighted Brier score for match outcomes on a held-out test set, following the probability-forecast evaluation approach introduced by @citebrier1950, and using a box-constrained quasi-Newton optimiser. The final output is an end-of-sample global ranking of clubs in Elo units, together with an estimate of out-of-sample predictive accuracy.
+
+To conduct the analysis in a transparent and reproducible way, the workflow is implemented entirely in R and organised around a small set of well-established packages. Raw match files and intermediate tables are imported with `readr` (@citereadr), and project-relative file paths are handled with `here` (@citehere). Dates and team-name text fields are standardised using `lubridate` (@citelubricate) and `stringr` (@citestringr). Data cleaning, reshaping, and aggregation rely on `dplyr` (@citedplyr) and `tidyr` (@citetidyr), with compact summary tables supported by `tibble` (@citetibble). Figures are produced with `ggplot2` (@citeggplot2), with axis/scale formatting handled by `scales` (@citescales) and label placement supported by `ggrepel` (@citeggrepel). Tables are generated dynamically using `knitr` (@citeknitr), ensuring that descriptive summaries and model outputs update automatically when the underlying data or tuning results change.
+
+The fitted model yields a calibrated but intentionally simple probabilistic baseline for Big-5 domestic outcomes. In the final refit, the relevance-weighted tuning selects a moderate update size and strong recency weighting, and the resulting overall Brier score is approximately $0.159$ over the full sample. The final rating table contains 163 clubs, with end-of-sample Elo ratings spanning roughly 860 to 1402. At the top of the ranking, Bayern Munich is highest-rated (about 1402), followed by Paris SG, Real Madrid, Barcelona, and Arsenal, while Dortmund appears in the top 25 (rank 13), consistent with sustained upper-tier Bundesliga performance.
+
+These results indicate that a domestic-only, multi-season Elo model—augmented with season-to-season shrinkage, a promotion penalty, and recency emphasis—can produce a coherent cross-league ordering on a single scale while maintaining interpretable match-level probabilities. At the same time, the analysis also motivates a careful comparison with widely used public rating systems ([FootballDatabase](https://www.footballdatabase.com/ranking/world/1) and [Opta](https://theanalyst.com/articles/who-are-the-best-football-team-in-the-world-opta-power-rankings)), which is presented in Appendix {#sec-comparison} using aligned within-set ranks.
+
+The remainder of this paper is structured as follows. @sec-data describes the data and preprocessing. @sec-model introduces the global multi-season Elo model, including shrinkage, promotion handling, and recency weighting. @sec-result reports predictive performance and presents the final club rankings. @sec-discussion discusses interpretation, limitations, and directions for future work and finally @sec-appendix describes detailed data retrieval process and comparison with established football rating systems
+
+# Data{#sec-data}
+
+The cleaned dataset spans the 2015/16 season through the 2025/26 season, with the sample cut off at 15 December 2025 (i.e., the 2025/26 season is partial). Each row corresponds to one match and includes the match date, league identifier, home and away team names, full-time home and away goals (FTHG/FTAG), and a full-time result indicator ($Y \in {H, D, A}$) for home win, draw, or away win. 
+
+To demonstrate how the cleaned match table can be filtered into interpretable team-specific summaries, @tbl-dortmund-home-10 lists Borussia Dortmund’s 10 most recent home matches in the dataset. @tbl-dortmund-home-all-summary aggregates all Dortmund home matches in the cleaned file into a compact performance summary (wins/draws/losses and average goals for/against), providing an example of how match-level records translate into descriptive performance statistics.
+
+```{r}
+#| label: setup-cleaned-matches
+#| include: false
+
+matches <- readRDS(here::here("data", "clean", "matches_clean.rds")) %>%
+  mutate(
+    Date  = as.Date(Date),
+    League = tolower(str_squish(as.character(League))),
+    FTHG = as.numeric(FTHG),
+    FTAG = as.numeric(FTAG),
+    TotalGoals = FTHG + FTAG
+  ) %>%
+  arrange(Date)
+
+```
+
+```{r}
+#| label: tbl-dortmund-home-10
+#| tbl-cap: "Most recent 10 home matches for Dortmund"
+#| echo: false
+#| message: false
+#| warning: false
+
+dortmund_pat <- regex("dortmund", ignore_case = TRUE)
+
+dortmund_home_10 <- matches %>%
+filter(str_detect(HomeTeam, dortmund_pat)) %>%
+arrange(desc(Date)) %>%
+slice_head(n = 10) %>%
+transmute(
+Date,
+Season,
+League = str_to_title(League),
+HomeTeam,
+AwayTeam,
+`Home goals` = FTHG,
+`Away goals` = FTAG,
+Result = FTR,
+`Total goals` = TotalGoals
+)
+
+dortmund_tbl <- dortmund_home_10 %>%
+  mutate(
+    Date = sprintf("\\mbox{%s}", as.character(Date)),   # prevents 2025-11- / 22 line breaks
+    Opponent = AwayTeam,
+    Score = paste0(`Home goals`, "–", `Away goals`)
+  ) %>%
+  select(Date, Season, League, Opponent, Score, Result, `Total goals`)
+
+knitr::kable(dortmund_tbl, format = "latex", booktabs = TRUE, escape = FALSE) %>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    font_size = 9
+  ) %>%
+  kableExtra::column_spec(1, width = "1.25in") %>%
+  kableExtra::column_spec(4, width = "1.6in")
+
+```
+
+```{r}
+#| label: tbl-dortmund-home-all-summary
+#| tbl-cap: "Summary statistics for all Dortmund home matches"
+#| echo: false
+#| message: false
+#| warning: false
+
+dortmund_pat <- regex("dortmund", ignore_case = TRUE)
+
+dortmund_home_all <- matches %>%
+  filter(str_detect(HomeTeam, dortmund_pat)) %>%
+  transmute(
+    Date,
+    Season,
+    League = str_to_title(League),
+    HomeTeam,
+    AwayTeam,
+    `Home goals` = FTHG,
+    `Away goals` = FTAG,
+    Result = FTR,
+    `Total goals` = TotalGoals
+  )
+
+if (nrow(dortmund_home_all) == 0) {
+  knitr::kable(tibble(Note = "No home matches matched 'Dortmund'. Check team naming in matches_clean.rds."))
+} else {
+  dortmund_sum_all <- dortmund_home_all %>%
+    summarise(
+      `Matches` = n(),
+      `Wins (H)`   = sum(Result == "H", na.rm = TRUE),
+      `Draws (D)`  = sum(Result == "D", na.rm = TRUE),
+      `Losses (A)` = sum(Result == "A", na.rm = TRUE),
+      `Avg goals for`     = mean(`Home goals`, na.rm = TRUE),
+      `Avg goals against` = mean(`Away goals`, na.rm = TRUE),
+      `Avg total goals`   = mean(`Total goals`, na.rm = TRUE)
+    ) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+  knitr::kable(dortmund_sum_all)
+}
+
+```
+
+
+```{r}
+#| label: tbl-league-counts-goals
+#| tbl-cap: "Match counts and average goals per match by league"
+#| echo: false
+#| message: false
+#| warning: false
+#| fig.pos: "H"
+
+league_stats <- matches %>%
+filter(!is.na(League)) %>%
+group_by(League) %>%
+summarise(
+`Matches` = n(),
+`Avg total goals` = mean(TotalGoals, na.rm = TRUE),
+`Avg home goals`  = mean(FTHG, na.rm = TRUE),
+`Avg away goals`  = mean(FTAG, na.rm = TRUE),
+.groups = "drop"
+) %>%
+mutate(
+League = str_to_title(League),
+across(where(is.numeric), ~ round(.x, 2))
+) %>%
+arrange(League)
+
+knitr::kable(league_stats, align = "lrrrr")
+
+```
+
+
+
+To provide transparent sample coverage, @tbl-league-counts-goals reports the total number of matches available per league in the cleaned file, along with average home goals, away goals, and total goals per match. 
+
+```{r, herehere, include=FALSE}
+source(here::here("script", "02-data_visualization.R"), 
+       local = knitr::knit_global())
+
+```
+
+```{r fig-result-proportions, fig.cap="Home/draw/away result proportions by league", echo=FALSE}
+knitr::include_graphics("../data/figures/result_proportions_by_league.png")
+```
+
+Outcome patterns are summarized by the proportions of home wins, draws, and away wins by league in @fig-result-proportions. Goal scoring distributions are summarized by discrete goal counts for home and away teams in @fig-goals-distribution-home-away, which provides a direct view of how frequently common scoreline components (e.g., 0–1–2 goals) occur.
+
+```{r fig-goals-distribution-home-away, fig.cap="Distribution of home and away goals per match", echo=FALSE}
+knitr::include_graphics("../data/figures/goals_distribution_home_away.png")
+
+```
+
+To connect domestic league results to broader cross-league strength, matches are merged with a league–season table of UEFA country coefficients. Let ($c_{\ell,s}$) denote the coefficient for league ($\ell$) in season ($s$). This coefficient is rescaled into a league strength offset ($\delta_{\ell,s}$), which enters the Elo expected-score calculation as an additive league–season term. The time variation in ($c_{\ell,s}$) across the Big-5 is shown in @fig-uefa-coefficients-by-league.
+
+```{r fig-uefa-coefficients-by-league, fig.cap="UEFA league coefficients over time", echo=FALSE}
+knitr::include_graphics("../data/figures/uefa_coefficients_by_league.png")
+
+```
+
+After preprocessing, each match ($i$) is represented by the season ($s_i$), start year ($t_i$), league ($\ell_i$), home and away teams ($h_i$) and ($a_i$), outcome ($Y_i \in {H,D,A}$), and the UEFA-based offset ($\delta_{\ell_i,s_i}$). The ordered collection (${(h_i,a_i,s_i,t_i,\ell_i,Y_i,\delta_{\ell_i,s_i})}_{i=1}^N$) is the input to the global Elo model described in @sec-model.
+
+
+
+
+
+
+# Elo rating model{#sec-model}
+
+The model assigns to each team $j$ at match index $i$ an Elo rating $R_{j,i}$ measured in points. At the beginning of the dataset all teams share a common baseline rating $R_0 = 1200$. For a given match $i$ between home team $h_i$ and away team $a_i$, with pre-match ratings $R_{h_i,i}$ and $R_{a_i,i}$, the model incorporates a home advantage $H$ (fixed at 100 Elo points) and a league offset $\delta_{\ell_i,s_i}$ common to both teams, derived from the UEFA coefficient.
+
+The expected home “score” is defined using the standard Elo logistic link
+$$
+E_{h_i,i} \;=\; \frac{1}{1 + 10^{-\,(R_{h_i,i} + H + \delta_{\ell_i,s_i} - (R_{a_i,i} + \delta_{\ell_i,s_i}))/400}}.
+$$
+Because domestic matches involve two teams from the same league in the same season, the offset $\delta_{\ell_i,s_i}$ cancels algebraically inside the parentheses; however, it remains in the formulation so the framework can be extended to cross-league fixtures where the offsets differ.
+
+The observed full-time result $Y_i$ is encoded as a home score
+$$
+S_{h_i,i} =
+\begin{cases}
+1   & \text{if } Y_i = \text{H (home win)},\\[4pt]
+0.5 & \text{if } Y_i = \text{D (draw)},\\[4pt]
+0   & \text{if } Y_i = \text{A (away win)}.
+\end{cases}
+$$
+The away score is $S_{a_i,i} = 1 - S_{h_i,i}$. After match $i$, ratings are updated according to
+$$
+R_{h_i,i+1} \;=\; R_{h_i,i} + K_{\text{eff},i}\,\bigl(S_{h_i,i} - E_{h_i,i}\bigr),
+$$
+$$
+R_{a_i,i+1} \;=\; R_{a_i,i} + K_{\text{eff},i}\,\bigl(S_{a_i,i} - (1 - E_{h_i,i})\bigr),
+$$
+where $K_{\text{eff},i}$ is a match-specific effective $K$–factor that controls how quickly ratings react to the result. Ratings for other teams remain unchanged at time $i+1$.
+
+## Multi-season dynamics: shrinkage and promoted teams
+
+To prevent ratings from drifting over long time horizons and to reflect changes in team quality between seasons, two mechanisms are applied at season boundaries. Let $s$ index seasons and $t(s)$ be the start year of season $s$ (for example, $t(2015/16) = 2015$). At the end of season $s$, suppose team $j$ has rating $R_{j,\text{end}(s)}$. Before the first match of season $s+1$, its carried-over rating is shrunk toward the global baseline $R_0$ via
+$$
+R_{j,\text{start}(s+1)}^{\text{carried}} \;=\; R_0 + \lambda \,\bigl(R_{j,\text{end}(s)} - R_0\bigr),
+$$
+where $0 \le \lambda \le 1$ is a shrinkage parameter. The case $\lambda = 1$ corresponds to full carry-over with no regression to the mean, $\lambda = 0$ resets all teams to the baseline at the start of each season, and intermediate values partially preserve past performance while pulling ratings back toward $R_0$. Teams present in the previous season use $R_{j,\text{start}(s+1)}^{\text{carried}}$ as their starting rating.
+
+For newly promoted teams or teams that appear for the first time in the dataset in season $s$, there is no carried-over rating. These teams start below the baseline at
+$$
+R_{j,\text{start}(s)} = R_0 - P,
+$$
+where $P \ge 0$ is a promotion penalty. This reflects the typical gap between incumbent top-division clubs and teams promoted from lower divisions. Thus, at the start of each season, every team either inherits a shrunken rating from the previous season or is treated as new or promoted and assigned the penalised starting rating $R_0 - P$.
+
+## Recency and current-season emphasis
+
+Historical results are informative, but matches from many seasons ago should have less influence than recent results. This is handled through relevance weights in the loss function and a current-season adjustment to the $K$–factor.
+
+Let $T$ denote the start year of the most recent season in the dataset, and let $t_i$ be the start year of the season containing match $i$. Define the season age of match $i$ as
+$$
+\text{age}_i = T - t_i.
+$$
+A relevance weight is then defined as
+$$
+w_i = \rho^{\,\text{age}_i},
+$$
+where $0 < \rho < 1$ is a relevance decay parameter. Smaller values of $\rho$ down-weight older seasons more aggressively. These weights do not affect the Elo update itself; instead, they are used when evaluating model fit and tuning the hyperparameters (Section \ref{sec-hyper}). Matches from the most recent season have $\text{age}_i = 0$ and thus $w_i = 1$, while matches from older seasons have $w_i < 1$.
+
+To emphasise the 2025/26 season in the rating dynamics, the effective $K$–factor depends on whether a match belongs to the most recent season. Specifically,
+$$
+K_{\text{eff},i} =
+\begin{cases}
+K \cdot c, & \text{if } t_i = T,\\[4pt]
+K,         & \text{if } t_i < T,
+\end{cases}
+$$
+where $K > 0$ is the base $K$–factor and $c \ge 1$ is a current-season multiplier. For matches in the most recent season, ratings therefore move $c$ times as much in response to the term $(S_{h_i,i} - E_{h_i,i})$ as they do in earlier seasons. Together, the relevance weights $\{w_i\}$ and the current-season multiplier $c$ ensure that older matches are discounted when assessing predictive performance and that ratings are more sensitive to current-season outcomes.
+
+## Hyperparameter estimation via relevance-weighted Brier score
+
+The global Elo model involves five main hyperparameters: the base $K$–factor $K$ controlling the magnitude of rating updates; the inter-season shrinkage parameter $\lambda$; the promotion penalty $P$ applied to new teams; the relevance decay parameter $\rho$ for down-weighting old seasons; and the current-season $K$ multiplier $c$. These hyperparameters are estimated by minimising a relevance-weighted Brier score on a held-out test set.
+
+The $N$ matches are first partitioned randomly into a training set $\mathcal{T}_\text{train}$ containing 70% of matches and a test set $\mathcal{T}_\text{test}$ containing the remaining 30%, using a fixed random seed. For any proposed parameter vector $\theta = (K,\lambda,P,\rho,c)$, the Elo update is applied sequentially over all matches, yielding for each match $i$ an expected home score $E_{h_i,i}$ and an observed home score $S_{h_i,i}$. Relevance weights $w_i = \rho^{\,\text{age}_i}$ are then computed based on the season age. The relevance-weighted Brier scores on the training and test sets are given by
+$$
+\text{Brier}_\text{train}(\theta) =
+\frac{\displaystyle\sum_{i \in \mathcal{T}_\text{train}} w_i \bigl(S_{h_i,i} - E_{h_i,i}\bigr)^2}
+     {\displaystyle\sum_{i \in \mathcal{T}_\text{train}} w_i},
+$$
+and
+$$
+\text{Brier}_\text{test}(\theta) =
+\frac{\displaystyle\sum_{i \in \mathcal{T}_\text{test}} w_i \bigl(S_{h_i,i} - E_{h_i,i}\bigr)^2}
+     {\displaystyle\sum_{i \in \mathcal{T}_\text{test}} w_i}.
+$$
+
+The objective is to find $\hat\theta$ that minimises $\text{Brier}_\text{test}(\theta)$ subject to box constraints that restrict parameters to plausible ranges (for example, $5 \le K \le 80$, $0.5 \le \lambda \le 1$, $0 \le P \le 200$, $0.1 \le \rho \le 0.8$, $1 \le c \le 3$). The function $\text{Brier}_\text{test}(\theta)$ is treated as a black-box function of $\theta$, and a box-constrained quasi-Newton optimisation algorithm (L-BFGS-B) is applied to obtain an approximate minimiser
+$$
+\hat\theta = (\hat K, \hat\lambda, \hat P, \hat\rho, \hat c).
+$$
+
+## Final model and club rankings
+
+Using the estimated hyperparameters $\hat\theta$, the model is refit on the full dataset. This involves recomputing the season ages and relevance weights using $\hat\rho$, applying the Elo updates sequentially over all matches with $K = \hat K$, $\lambda = \hat\lambda$, $P = \hat P$ and $c = \hat c$, and obtaining for each match the expected home score $\widehat{E}_{h_i,i}$ and realised home score $S_{h_i,i}$. The overall Brier score of the final model is
+$$
+\text{Brier}_\text{overall} =
+\frac{1}{N} \sum_{i=1}^N \bigl(S_{h_i,i} - \widehat{E}_{h_i,i}\bigr)^2,
+$$
+which summarises the average squared error of the predicted home score across all matches.
+
+To produce a single rating for each club, the match-by-match post-update ratings are tracked over time and the *final* Elo for club $j$ is defined as its **last observed post-match rating** within the sample window. Let $i_j^\star = \max{, i : j \in {h_i, a_i},}$ denote the index of the most recent match in the dataset in which club $j$ appears (either as home or away). The club’s final Elo is then $\widehat{R}*j = R*{j,,i_j^\star}^{\text{after}}$, i.e., the post-match rating immediately after its last recorded match. Clubs are ranked by sorting $\widehat{R}_j$ in descending order. This yields a global ranking across the Big Five leagues at the end of the sample period that reflects multi-season performance (with inter-season shrinkage and a promotion penalty) and stronger sensitivity to current-season outcomes through the current-season $K$ multiplier.
+
+# Result {#sec-result}
+
+## Hyperparameter estimates and predictive performance
+
+Model hyperparameters were selected by minimising the relevance-weighted Brier score on a held-out 30% test set. The optimiser selected $\hat K \approx 21.8$, inter-season shrinkage $\hat\lambda \approx 0.888$, a promotion penalty $\hat P \approx 200$, relevance decay $\hat\rho \approx 0.10$, and a current-season multiplier $\hat c \approx 1.37$. These values imply (i) moderate match-to-match rating updates, (ii) meaningful regression toward the baseline between seasons, (iii) a substantial handicap for newly appearing/promoted clubs, and (iv) strong down-weighting of older seasons when tuning predictive performance.
+
+Under the refit on the full dataset, the model’s overall Brier score is approximately $0.159$, summarising the mean squared error between the predicted home score $\widehat{E}*{h_i,i}$ and the encoded match outcome $S*{h_i,i}$ across all matches.
+
+## Distribution of global Elo ratings
+
+The final Elo rating table contains 163 clubs. Summary statistics of the final Elo ratings are reported in @tbl-final-elo-summary. Ratings span from roughly $860$ to $1402$, with mean $\approx 1081$ and standard deviation $\approx 127$. This spread indicates substantial separation between the strongest and weakest clubs in the sample: differences of a few hundred Elo points correspond to large differences in implied expected score under the Elo logistic link.
+
+## Top-25 clubs and league composition
+
+@tbl-top25-elo reports the top 25 clubs by final Elo rating at the end of the sample window. Bayern Munich ranks first (Elo $\approx 1402$), followed by Paris SG, Real Madrid, Barcelona, and Arsenal. Dortmund also appears in the top 25 (rank 13), consistent with sustained upper-tier Bundesliga performance over the sample period (@tbl-top25-elo).
+
+To summarise which leagues contribute most to the top of the ranking, @tbl-top25-country-counts counts the number of top-25 clubs by league. England and Italy each contribute six clubs, Spain contributes five, and France and Germany contribute four each (@tbl-top25-country-counts).
+
+
+```{r}
+#| label: tbl-top25-elo
+#| tbl-cap: "Top 25 clubs by final Elo rating"
+#| echo: false
+#| message: false
+#| warning: false
+
+library(dplyr)
+library(readr)
+library(stringr)
+library(here)
+library(knitr)
+
+final_ratings <- read_csv(
+here::here("final_ratings_global.csv"),
+show_col_types = FALSE
+)
+
+top25 <- final_ratings %>%
+transmute(
+Club    = str_squish(Club),
+Country = str_to_title(str_squish(Country)),
+Elo     = as.numeric(Elo)
+) %>%
+arrange(desc(Elo)) %>%
+slice_head(n = 25)
+
+knitr::kable(
+top25,
+digits    = 0,
+col.names = c("Club", "Country", "Elo rating")
+)
+
+
+```
+
+```{r}
+#| label: tbl-top25-country-counts
+#| tbl-cap: "Top-25 Elo clubs: Number of clubs by league"
+#| echo: false
+#| message: false
+#| warning: false
+
+top25_country_counts <- top25 %>%
+count(Country, name = "Clubs in top 25") %>%
+arrange(desc(`Clubs in top 25`), Country)
+
+knitr::kable(top25_country_counts, align = "lr")
+
+```
+
+```{r}
+#| label: tbl-final-elo-summary
+#| tbl-cap: "Summary statistics of final Elo ratings"
+#| echo: false
+#| message: false
+#| warning: false
+
+library(dplyr)
+library(knitr)
+
+elo_summary <- final_ratings %>%
+transmute(
+Club    = str_squish(Club),
+Country = str_to_title(str_squish(Country)),
+Elo     = as.numeric(Elo)
+) %>%
+summarise(
+`N clubs` = sum(!is.na(Elo)),
+`Highest Elo` = max(Elo, na.rm = TRUE),
+`Lowest Elo`  = min(Elo, na.rm = TRUE),
+`Mean Elo`    = mean(Elo, na.rm = TRUE),
+`Median Elo`  = median(Elo, na.rm = TRUE),
+`SD Elo`      = sd(Elo, na.rm = TRUE),
+`IQR Elo`     = IQR(Elo, na.rm = TRUE)
+) %>%
+mutate(across(where(is.numeric), ~ round(.x, 0)))
+
+knitr::kable(elo_summary, align = "r")
+
+```
+
+# Discussion {#sec-discussion}
+
+This paper constructs a single Elo-based rating system for clubs in the top divisions of England, Spain, Italy, Germany, and France using domestic league matches from 2015/16–2025/26 (up to the sample end date). Ratings update match-by-match with a fixed home advantage, carry across seasons via shrinkage toward a baseline ($R_0=1200$), and assign a promotion penalty to newly appearing clubs. Hyperparameters are chosen by minimising a relevance-weighted Brier score, placing extra emphasis on recent seasons.
+
+With that model in place, the results highlight several broad patterns about Big-5 domestic football. One clear lesson is that team strength is strongly tiered: a small elite group sits above a dense cluster of strong contenders. In the end-of-sample ranking, Bayern Munich leads, followed closely by Paris SG, Real Madrid, Barcelona, and Arsenal (@tbl-top25-elo). This ordering implies that even among “top” clubs, there is meaningful separation, but also that many matches among the upper tier should be relatively competitive because the Elo gaps are not enormous.
+
+A second takeaway concerns how top strength is distributed across leagues. The top-25 list is not evenly split by country: England and Italy contribute the largest shares, followed by Spain, with France and Germany contributing slightly fewer (@tbl-top25-country-counts). Interpreted literally, this suggests differences in the depth of elite clubs across the five leagues during the sample window.
+
+To help interpret how these rankings align with established public systems, the paper also conducts a detailed comparison against FootballDatabase and Opta in @sec-appendix. That appendix shows where rank orders agree and where they diverge once the club set is aligned and rankings are interpreted within the same Big-5 subset.
+
+At the same time, several limitations should shape how strongly we interpret these results. The model uses only categorical outcomes (win/draw/loss) and ignores match context such as injuries, squad rotation, travel, or managerial change, and it does not use goal margin (or xG) information. League strength enters via UEFA-based offsets rather than being estimated directly from cross-league match data. Predictive tuning relies on a random train/test split, which is convenient but not the same as forecasting forward through time. Finally, because the reported “final” club rating is the last observed post-match Elo at the cutoff date (not a peak-over-window measure), the ranking reflects end-of-sample strength more than a club’s best point during the 2015/16–2025/26 period.
+
+These constraints point naturally to future work. A time-ordered evaluation would better reflect real forecasting, and incorporating goal difference or expected-goals signals could reduce noise and improve calibration. Extending the dataset to include European competition matches would also allow league effects to be learned more directly rather than imposed through external coefficients. Lastly, reporting rolling or end-of-season ratings (and ideally uncertainty bands) would help distinguish persistent club quality from short-term form swings.
+
+\newpage
+
+\appendix
+
+# Appendix {#sec-appendix}
+
+## Data Retrieval Process
+
+
+
+## Comparison with Established Football Rating Systems
+
+This appendix situates the global Elo model developed in this paper within the broader landscape of football rating methodologies. The comparison focuses on three widely referenced systems: (i) the *FootballDatabase World Club Elo Ratings*, (ii) the *FIFA Men’s World Ranking*, and (iii) the *Opta Power Rankings*. Although these systems are all related—directly or indirectly—to Elo-style ideas (expected result plus rating updates after matches), they differ in scope, match weighting, use of score margin, season treatment, and the extent to which tuning is driven by predictive calibration. These differences help explain why the same club can occupy different positions across published rankings.
+
+### Conceptual scope and rated entities
+
+**This paper (Big-5 model).** The model is restricted to domestic top-division league matches in England, Spain, Italy, Germany, and France (2015/16–2025/26). The goal is a *comparable* measure of club strength within a controlled setting: same match type (league play), same region (Big Five leagues), and consistent season structure.
+
+**FootballDatabase.** FootballDatabase publishes a worldwide club ranking that aggregates domestic top tiers across many countries and also incorporates international club competitions. Its design goal is a single “world table” for clubs across leagues and continents, constructed using an Elo-style update with explicit competition weights and goal-difference scaling.
+
+**FIFA.** FIFA ranks national teams rather than clubs, based on official international fixtures. The post-2018 method is commonly presented in Elo-like form with a match-importance factor; the rated entities and match calendar are fundamentally different from club football.
+
+**Opta.** Opta’s Power Rankings are also a worldwide club ranking. Opta describes the system as Elo-based, but implemented through a hierarchy of ratings (team, league, country, continent) so that results can propagate between levels when clubs play cross-league or cross-continent matches. Opta also reports transforming the internal rating to a 0–100 scale for presentation.
+
+### Model structure and updating principles
+
+This section describes the three club systems and the FIFA system using matched terminology: (i) expected result, (ii) update equation, (iii) match weighting, (iv) margin of victory, and (v) time/season treatment.
+
+#### This model
+
+**Expected result.** For match $i$ with home team $h_i$ and away team $a_i$, the expected home score is computed via the Elo logistic transform using the pre-match rating difference and a fixed home-advantage term $H$.
+
+**Update equation.** Ratings update as
+$$
+R_{h,i+1}=R_{h,i}+K_{\text{eff},i},(S_{h,i}-E_{h,i}),\qquad
+R_{a,i+1}=R_{a,i}+K_{\text{eff},i},\bigl(S_{a,i}-(1-E_{h,i})\bigr),
+$$
+with $S_{h,i}\in{1,0.5,0}$ encoding win/draw/loss.
+
+**Match weighting.** All domestic league matches are treated as the same match type; the only systematic reweighting in the *update* is the current-season multiplier applied through $K_{\text{eff},i}$.
+
+**Margin of victory.** No goal-difference multiplier is used; the outcome enters only through the categorical result (win/draw/loss).
+
+**Season/time treatment.** Ratings shrink toward a baseline between seasons (parameter $\lambda$), promoted/new teams start below baseline (penalty $P$), and historical seasons are down-weighted for *tuning* via relevance weights in the loss.
+
+**Calibration/tuning.** Hyperparameters are selected by minimizing a relevance-weighted Brier score on a held-out set, so the primary objective is explicitly predictive (probability calibration), not only rank plausibility.
+
+#### FootballDatabase
+
+FootballDatabase describes a modified Elo update of the form
+$$
+R_{\text{new}} = R_{\text{old}} + K,G,(W - W_e),
+$$
+where $W\in{1,0.5,0}$ is the match result and $W_e$ is the expected result from the Elo logistic function.
+
+**Match weighting (competition importance).** The factor $K$ varies by competition and stage (e.g., higher in major international competitions; different constants across domestic leagues).
+
+**Margin of victory.** FootballDatabase includes an explicit goal-difference multiplier $G$ (e.g., $G=1$ for a draw/one-goal win; larger values for bigger winning margins).
+
+**Season/time treatment and promoted teams.** FootballDatabase describes initial ratings for newly promoted teams that depend on league strength or tier, rather than estimating promotion effects from a single unified scoring-rule framework within a fixed-scope dataset.
+
+In short, FootballDatabase emphasizes global coverage and match-importance weighting (via $K$) plus margin-of-victory responsiveness (via $G$), whereas the Big-5 model in this paper emphasizes controlled scope and predictive calibration.
+
+#### FIFA Men’s World Ranking
+
+Public descriptions of FIFA’s post-2018 ranking present an Elo-like update:
+$$
+P_{\text{new}} = P_{\text{old}} + I,(W - W_e),
+$$
+where $I$ is a match-importance factor (higher for major tournaments than friendlies). Unlike the club models above, the rated entities are national teams and the match set is international fixtures, so direct numerical comparison to club ratings is not meaningful even when the algebra is similar.
+
+#### Opta Power Rankings
+
+Opta describes its Power Rankings as Elo-based, but implemented through a hierarchy: team ratings sit within league ratings, within country ratings, within continent ratings. Match results exchange rating points at the appropriate level(s): domestic league matches primarily affect teams (and their league), while cross-league competitions allow rating to move between leagues/countries/continents through the hierarchy.
+
+**Margin of victory.** Opta states that the margin of victory affects the size of the rating exchange (larger wins imply larger exchanges).
+
+**Scale.** Opta reports transforming its internal rating into a 0–100 scale using a power transform and min–max scaling for interpretability and presentation.
+
+Because Opta’s published description is high-level, the exact parameter values (e.g., effective learning rates by competition) are not fully transparent, but the key architectural distinction is the hierarchical propagation mechanism and the standardized public-facing scale.
+
+### Practical comparability of Ranking Systems
+
+Because FootballDatabase and Opta are global systems (mixing domestic and continental competitions across many countries), while this paper is intentionally Big-5 domestic-only, the absolute rating scales are not directly comparable. The defensible comparison is therefore at the level of rank order, after aligning the club set and using a consistent snapshot of rankings. In this appendix, the aligned club set is defined as the top 25 clubs in the Big-5 Elo ranking (@tbl-3rank-compare). FootballDatabase and Opta ranks are taken as within-set ranks over the same Big-5 subset (i.e., ranks re-indexed within the aligned Big-5 universe rather than interpreted as worldwide ranks), so that “rank 1” always means “best within the Big-5 subset,” not best globally.
+
+A direct club-by-club comparison of the three rank lists is shown in @tbl-3rank-compare. To make disagreements visually transparent, @fig-rank-lines-one connects each club’s position across systems; line crossings indicate rank-order reversals between methods.
+
+Overall agreement is summarised in @tbl-rank-tests. Within the aligned top-25 club set, the Big-5 Elo ordering has Spearman rank correlation of 0.705 with FootballDatabase and 0.550 with Opta, indicating moderate agreement in broad ordering and tiering, with closer alignment to FootballDatabase than Opta. The corresponding Kendall tau values are 0.520 (FootballDatabase) and 0.433 (Opta), consistent with moderate concordance in pairwise ordering. In more interpretable units, the median absolute rank gap is 5 places versus FootballDatabase and 9 places versus Opta.
+
+The largest rank gaps are listed in @tbl-worst-fdb and @tbl-worst-opta. These discrepancies are informative rather than “errors”: FootballDatabase incorporates global competition weighting and margin-of-victory adjustments, so clubs whose international/competition-mix signal differs from domestic Big-5 league performance can shift substantially relative to a domestic-only Elo. Opta’s ranking is designed to reflect a broader performance signal than win/draw/loss alone in its proprietary framework, so clubs can be repositioned when underlying performance quality and opponent adjustments diverge from realised domestic results. Overall, the disagreements shown in @fig-rank-lines-one and @tbl-worst-fdb–@tbl-worst-opta are consistent with the fact that this paper measures domestic Big-5 league strength, while external systems incorporate broader global strength signals, even when comparisons are restricted to the same Big-5 club subset.
+
+
+
+```{r comparison, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+final_raw <- readr::read_csv(here::here("final_ratings_global.csv"), show_col_types = FALSE)
+xwalk_raw <- readr::read_csv(here::here("fdb_opta_ranking.csv"), show_col_types = FALSE)
+
+final <- final_raw %>%
+  transmute(
+    Club    = str_squish(Club),
+    Country = str_to_title(Country),
+    Elo     = as.numeric(Elo),
+    ClubKey = str_to_lower(str_squish(Club))
+  ) %>%
+  arrange(desc(Elo)) %>%
+  mutate(MyRank = row_number())
+
+top25 <- final %>% filter(MyRank <= 25)
+
+# ---- within-set ranks already provided (do NOT re-rank) ----
+xwalk <- xwalk_raw %>%
+  transmute(
+    ClubKey   = str_to_lower(str_squish(Club)),
+    RankFDB   = suppressWarnings(as.integer(RankFDB)),   # already within-set
+    RankOpta  = suppressWarnings(as.integer(RankOpta))   # already within-set
+  )
+
+# ---- merge ----
+comp <- top25 %>%
+  left_join(xwalk, by = "ClubKey") %>%
+  filter(!is.na(RankFDB) | !is.na(RankOpta)) %>%
+  mutate(
+    FDB_within  = RankFDB,     # just alias for readability
+    Opta_within = RankOpta
+  )
+
+# ---- rank correlations ----
+spearman_fdb  <- suppressWarnings(cor(comp$MyRank, comp$FDB_within,  method="spearman", use="complete.obs"))
+spearman_opta <- suppressWarnings(cor(comp$MyRank, comp$Opta_within, method="spearman", use="complete.obs"))
+kendall_fdb   <- suppressWarnings(cor(comp$MyRank, comp$FDB_within,  method="kendall",  use="complete.obs"))
+kendall_opta  <- suppressWarnings(cor(comp$MyRank, comp$Opta_within, method="kendall",  use="complete.obs"))
+
+# ---- disagreement summaries ----
+comp <- comp %>%
+  mutate(
+    AbsGap_FDB  = ifelse(is.na(FDB_within),  NA_integer_, abs(MyRank - FDB_within)),
+    AbsGap_Opta = ifelse(is.na(Opta_within), NA_integer_, abs(MyRank - Opta_within))
+  )
+
+mad_fdb  <- median(comp$AbsGap_FDB,  na.rm = TRUE)
+mad_opta <- median(comp$AbsGap_Opta, na.rm = TRUE)
+
+worst_fdb <- comp %>%
+  filter(!is.na(AbsGap_FDB)) %>%
+  arrange(desc(AbsGap_FDB)) %>%
+  slice_head(n = 5) %>%
+  transmute(
+    Club,
+    `My rank` = MyRank,
+    `FDB within-set rank` = FDB_within,
+    `Abs. rank gap` = AbsGap_FDB
+  )
+
+worst_opta <- comp %>%
+  filter(!is.na(AbsGap_Opta)) %>%
+  arrange(desc(AbsGap_Opta)) %>%
+  slice_head(n = 5) %>%
+  transmute(
+    Club,
+    `My rank` = MyRank,
+    `Opta within-set rank` = Opta_within,
+    `Abs. rank gap` = AbsGap_Opta
+  )
+```
+
+```{r tbl-3rank-compare, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(knitr)
+
+compare_tbl3 <- comp %>%
+  transmute(
+    Club,
+    Country,
+    `My Model Rank` = MyRank,
+    `FDB Rank`  = FDB_within,
+    `Opta Rank` = Opta_within
+  ) %>%
+  arrange(`My Model Rank`)
+
+knitr::kable(compare_tbl3, align = "llrrr")
+
+```
+
+
+
+```{r}
+#| label: fig-rank-lines-one
+#| fig-cap: "Rank comparison across systems for the aligned Big-5 league club set"
+#| echo: false
+#| message: false
+#| warning: false
+#| fig-height: 15
+
+
+plot_df <- comp %>%
+select(Club, MyRank, FDB_within, Opta_within) %>%
+pivot_longer(
+cols = c(MyRank, FDB_within, Opta_within),
+names_to = "System",
+values_to = "Rank"
+) %>%
+mutate(
+System = recode(System,
+MyRank      = "My Model Rank",
+FDB_within  = "FDB Rank (within set)",
+Opta_within = "Opta Rank (within set)"
+),
+System = factor(System, levels = c(
+"My Model Rank",
+"FDB Rank (within set)",
+"Opta Rank (within set)"
+))
+) %>%
+filter(!is.na(Rank))
+
+ggplot(plot_df, aes(x = System, y = Rank, group = Club)) +
+geom_line(alpha = 0.35, linewidth = 0.6) +
+geom_point(size = 1.7) +
+geom_text_repel(
+data = filter(plot_df, System == "My Model Rank"),
+aes(label = Club),
+nudge_x = -0.35,
+direction = "y",
+size = 3,
+seed = 1,
+max.overlaps = Inf,
+box.padding = 0.25,
+point.padding = 0.15
+) +
+scale_y_reverse(breaks = 1:25) +
+labs(
+x = NULL,
+y = "Rank",caption = "FootballDatabase and Opta ranks are within-set ranks over the Big-5 club set"
+) +
+theme_minimal(base_size = 12) +
+theme(
+panel.grid.minor = element_blank(),
+plot.margin = margin(t = 8, r = 12, b = 8, l = 40),
+axis.title.y = element_text(margin = margin(r = 14))
+)
+
+```
+
+
+
+
+```{r}
+#| label: tbl-rank-tests
+#| tbl-cap: "Rank-order agreement between the Big-5 Elo model and other rankings"
+#| echo: false
+#| message: false
+#| warning: false
+
+
+summary_tbl <- tibble::tibble(
+  Comparison = c("My Model vs FootballDatabase", "My Model vs Opta"),
+  `N (clubs with rank)` = c(sum(!is.na(comp$FDB_within)), sum(!is.na(comp$Opta_within))),
+  `Spearman rho` = c(spearman_fdb, spearman_opta),
+  `Kendall tau`  = c(kendall_fdb,  kendall_opta),
+  `Median Absolute Rank Gap` = c(mad_fdb, mad_opta)
+) %>%
+  mutate(
+    `Spearman rho` = round(`Spearman rho`, 3),
+    `Kendall tau`  = round(`Kendall tau`, 3),
+    `Median Absolute Rank Gap` = round(`Median Absolute Rank Gap`, 1)
+  )
+
+knitr::kable(summary_tbl, align = "lrrrr")
+```
+
+
+
+```{r}
+#| label: tbl-worst-fdb
+#| tbl-cap: "Largest within-set rank disagreements: Big-5 Elo vs FootballDatabase"
+#| echo: false
+#| message: false
+#| warning: false
+
+knitr::kable(
+worst_fdb,
+col.names = c("Club", "My Model Rank", "FDB Rank", "Absolute Rank Gap"),
+digits = 1
+)
+```
+
+
+```{r}
+#| label: tbl-worst-opta
+#| tbl-cap: "Largest within-set rank disagreements: Big-5 Elo vs Opta"
+#| echo: false
+#| message: false
+#| warning: false
+
+knitr::kable(
+worst_opta,
+col.names = c("Club", "My Model Rank", "Opta Rank", "Absolute Rank Gap"),
+digits = 1
+)
+```
+
+\newpage
+
+# References
+
 
