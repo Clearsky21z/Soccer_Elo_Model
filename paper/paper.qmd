@@ -1,6 +1,6 @@
 ---
-title: "Global Elo Model for European Football"
-subtitle: "A Multi-Season, Cross-League Rating and Prediction Framework"
+title: "A Global Elo Rating Model for Europe’s Big Five Leagues"
+subtitle: "Bayern Munich ranks #1 with Elo 1402 across 163 teams"
 author: 
   - John Zhang
 thanks: "Code and data are available at: https://github.com/Clearsky21z/Soccer_Elo_Model"
@@ -20,7 +20,6 @@ bibliography: references.bib
 library(readr)
 library(dplyr)
 library(here)
-library(knitr)
 library(stringr)
 library(knitr)
 library(tibble)
@@ -36,7 +35,7 @@ library(scales)
 
 Measuring club strength across European football leagues is difficult. Domestic league tables reflect performance within a single competition and season, while UEFA country and club coefficients aggregate results across tournaments but adjust slowly and are not directly interpretable as team-level strengths. For tasks such as forecasting match outcomes or comparing clubs across leagues, a single, dynamically updated rating system is preferable—provided that it can place teams from the “Big Five” leagues (England, Spain, Italy, Germany, France) on a common scale, respond to new information in the current season, incorporate historical performance while discounting older seasons, and be tuned using a proper predictive scoring rule rather than rule-of-thumb choices.
 
-This paper develops a global multi-season Elo model for domestic league matches in the Big Five leagues from the 2015/16 season up to the 2025/26 season (cut off at 15 December 2025). The specification builds on the Elo framework used in sports analytics and football modelling, as described in @citebeggs2024soccer and @citeegidi2026predictive, and extends it in three main directions. First, season-specific UEFA country coefficients are used as league-level offsets so that teams from stronger leagues are, on average, rated higher than teams from weaker leagues. Second, ratings are shrunk toward a global baseline between seasons, and newly promoted teams start below that baseline to reflect the typical gap between incumbent top-flight clubs and new entrants. Third, older seasons are down-weighted through an explicit relevance function, and rating updates for the current season use an inflated $K$-factor so that ratings respond more strongly to recent results.
+This paper develops a global multi-season Elo model for domestic league matches in the Big Five leagues from the 2015/16 season up to the 2025/26 season (cut off on 15 December 2025). The specification builds on the Elo framework used in sports analytics and football modelling, as described in @citebeggs2024soccer and @citeegidi2026predictive, and extends it in three main directions. First, season-specific UEFA country coefficients are used as league-level offsets so that teams from stronger leagues are, on average, rated higher than teams from weaker leagues. Second, ratings are shrunk toward a global baseline between seasons, and newly promoted teams start below that baseline to reflect the typical gap between incumbent top-flight clubs and new entrants. Third, older seasons are down-weighted through an explicit relevance function, and rating updates for the current season use an inflated $K$-factor so that ratings respond more strongly to recent results.
 
 Model hyperparameters are chosen by minimising a relevance-weighted Brier score for match outcomes on a held-out test set, following the probability-forecast evaluation approach introduced by @citebrier1950, and using a box-constrained quasi-Newton optimiser. The final output is an end-of-sample global ranking of clubs in Elo units, together with an estimate of out-of-sample predictive accuracy.
 
@@ -44,9 +43,9 @@ To conduct the analysis in a transparent and reproducible way, the workflow is i
 
 The fitted model yields a calibrated but intentionally simple probabilistic baseline for Big-5 domestic outcomes. In the final refit, the relevance-weighted tuning selects a moderate update size and strong recency weighting, and the resulting overall Brier score is approximately $0.159$ over the full sample. The final rating table contains 163 clubs, with end-of-sample Elo ratings spanning roughly 860 to 1402. At the top of the ranking, Bayern Munich is highest-rated (about 1402), followed by Paris SG, Real Madrid, Barcelona, and Arsenal, while Dortmund appears in the top 25 (rank 13), consistent with sustained upper-tier Bundesliga performance.
 
-These results indicate that a domestic-only, multi-season Elo model—augmented with season-to-season shrinkage, a promotion penalty, and recency emphasis—can produce a coherent cross-league ordering on a single scale while maintaining interpretable match-level probabilities. At the same time, the analysis also motivates a careful comparison with widely used public rating systems ([FootballDatabase](https://www.footballdatabase.com/ranking/world/1) and [Opta](https://theanalyst.com/articles/who-are-the-best-football-team-in-the-world-opta-power-rankings)), which is presented in Appendix {#sec-comparison} using aligned within-set ranks.
+These results indicate that a domestic-only, multi-season Elo model—augmented with season-to-season shrinkage, a promotion penalty, and recency emphasis—can produce a coherent cross-league ordering on a single scale while maintaining interpretable match-level probabilities. At the same time, the analysis also motivates a careful comparison with widely used public rating systems ([FootballDatabase](https://www.footballdatabase.com/ranking/world/1) and [Opta](https://theanalyst.com/articles/who-are-the-best-football-team-in-the-world-opta-power-rankings)), which is presented in @sec-appendix using aligned within-set ranks.
 
-The remainder of this paper is structured as follows. @sec-data describes the data and preprocessing. @sec-model introduces the global multi-season Elo model, including shrinkage, promotion handling, and recency weighting. @sec-result reports predictive performance and presents the final club rankings. @sec-discussion discusses interpretation, limitations, and directions for future work and finally @sec-appendix describes detailed data retrieval process and comparison with established football rating systems
+The remainder of this paper is structured as follows. @sec-data describes the data and preprocessing. @sec-model introduces the global multi-season Elo model, including shrinkage, promotion handling, and recency weighting. @sec-result reports predictive performance and presents the final club rankings. @sec-discussion discusses interpretation, limitations, and directions for future work and finally @sec-appendix describes detailed data retrieval process and comparison with established football rating systems.
 
 # Data{#sec-data}
 
@@ -213,7 +212,7 @@ knitr::include_graphics("../data/figures/uefa_coefficients_by_league.png")
 
 ```
 
-After preprocessing, each match ($i$) is represented by the season ($s_i$), start year ($t_i$), league ($\ell_i$), home and away teams ($h_i$) and ($a_i$), outcome ($Y_i \in {H,D,A}$), and the UEFA-based offset ($\delta_{\ell_i,s_i}$). The ordered collection (${(h_i,a_i,s_i,t_i,\ell_i,Y_i,\delta_{\ell_i,s_i})}_{i=1}^N$) is the input to the global Elo model described in @sec-model.
+After preprocessing, each match ($i$) is represented by the season ($s_i$), start year ($t_i$), league ($\ell_i$), home and away teams ($h_i$) and ($a_i$), outcome ($Y \in \{H, D, A\}$), and the UEFA-based offset ($\delta_{\ell_i,s_i}$). The ordered collection (${(h_i,a_i,s_i,t_i,\ell_i,Y_i,\delta_{\ell_i,s_i})}_{i=1}^N$) is the input to the global Elo model described in @sec-model.
 
 
 
@@ -274,7 +273,7 @@ A relevance weight is then defined as
 $$
 w_i = \rho^{\,\text{age}_i},
 $$
-where $0 < \rho < 1$ is a relevance decay parameter. Smaller values of $\rho$ down-weight older seasons more aggressively. These weights do not affect the Elo update itself; instead, they are used when evaluating model fit and tuning the hyperparameters (Section \ref{sec-hyper}). Matches from the most recent season have $\text{age}_i = 0$ and thus $w_i = 1$, while matches from older seasons have $w_i < 1$.
+where $0 < \rho < 1$ is a relevance decay parameter. Smaller values of $\rho$ down-weight older seasons more aggressively. These weights do not affect the Elo update itself; instead, they are used when evaluating model fit and tuning the hyperparameters. Matches from the most recent season have $\text{age}_i = 0$ and thus $w_i = 1$, while matches from older seasons have $w_i < 1$.
 
 To emphasise the 2025/26 season in the rating dynamics, the effective $K$–factor depends on whether a match belongs to the most recent season. Specifically,
 $$
@@ -317,7 +316,7 @@ $$
 $$
 which summarises the average squared error of the predicted home score across all matches.
 
-To produce a single rating for each club, the match-by-match post-update ratings are tracked over time and the *final* Elo for club $j$ is defined as its **last observed post-match rating** within the sample window. Let $i_j^\star = \max{, i : j \in {h_i, a_i},}$ denote the index of the most recent match in the dataset in which club $j$ appears (either as home or away). The club’s final Elo is then $\widehat{R}*j = R*{j,,i_j^\star}^{\text{after}}$, i.e., the post-match rating immediately after its last recorded match. Clubs are ranked by sorting $\widehat{R}_j$ in descending order. This yields a global ranking across the Big Five leagues at the end of the sample period that reflects multi-season performance (with inter-season shrinkage and a promotion penalty) and stronger sensitivity to current-season outcomes through the current-season $K$ multiplier.
+To produce a single rating for each club, the match-by-match post-update ratings are tracked over time and the *final* Elo for club $j$ is defined as its **last observed post-match rating** within the sample window. Let $i_j^\star = \max\{\, i : j \in \{h_i,a_i\}\,\}$ denote the index of the most recent match in the dataset in which club $j$ appears (either as home or away). The club’s final Elo is then $\widehat{R}_j = R_{j,i_j^\star}^{\text{after}}$, i.e., the post-match rating immediately after its last recorded match. Clubs are ranked by sorting $\widehat{R}_j$ in descending order. This yields a global ranking across the Big Five leagues at the end of the sample period that reflects multi-season performance (with inter-season shrinkage and a promotion penalty) and stronger sensitivity to current-season outcomes through the current-season $K$ multiplier.
 
 # Result {#sec-result}
 
@@ -325,7 +324,7 @@ To produce a single rating for each club, the match-by-match post-update ratings
 
 Model hyperparameters were selected by minimising the relevance-weighted Brier score on a held-out 30% test set. The optimiser selected $\hat K \approx 21.8$, inter-season shrinkage $\hat\lambda \approx 0.888$, a promotion penalty $\hat P \approx 200$, relevance decay $\hat\rho \approx 0.10$, and a current-season multiplier $\hat c \approx 1.37$. These values imply (i) moderate match-to-match rating updates, (ii) meaningful regression toward the baseline between seasons, (iii) a substantial handicap for newly appearing/promoted clubs, and (iv) strong down-weighting of older seasons when tuning predictive performance.
 
-Under the refit on the full dataset, the model’s overall Brier score is approximately $0.159$, summarising the mean squared error between the predicted home score $\widehat{E}*{h_i,i}$ and the encoded match outcome $S*{h_i,i}$ across all matches.
+Under the refit on the full dataset, the model’s overall Brier score is approximately $0.159$, summarising the mean squared error between the predicted home score $\widehat{E}_{h_i,i}$ and the encoded match outcome $S_{h_i,i}$ across all matches.
 
 ## Distribution of global Elo ratings
 
@@ -442,6 +441,31 @@ These constraints point naturally to future work. A time-ordered evaluation woul
 
 ## Data Retrieval Process
 
+All match-level data used in this paper were downloaded manually from the public archive maintained by *football-data.co.uk*. The site organises historical results by country and season. To retrieve the raw match files, navigate to the “Main Leagues” page, click into each relevant country link (England, Spain, Italy, Germany, France), and then download the CSV file for each season required (2015/16 through 2025/26). Concretely, the workflow is:
+
+1. Open the data download hub: [https://www.football-data.co.uk/data.php](https://www.football-data.co.uk/data.php)
+
+2. Under **Main Leagues**, click the country of interest (e.g., “Germany Football Results”).
+3. On the country page, locate the season-specific CSV links  and download one CSV per season.
+4. Save the files into league-specific folders under `data/raw/`, using a consistent naming convention that encodes the season (e.g., `Germany_2015_16.csv`, `England_2020_21.csv`). In this project, raw files are stored as:
+
+   * `data/raw/england/`
+   * `data/raw/spain/`
+   * `data/raw/italy/`
+   * `data/raw/germany/`
+   * `data/raw/france/`
+
+The match CSVs contain standard football-data fields. This paper uses (and checks for) the core columns required for Elo updating: `Date`, `HomeTeam`, `AwayTeam`, `FTHG`, `FTAG`, and `FTR` (full-time result). If a raw file does not explicitly include a season identifier, the season label is inferred from the filename (e.g., extracting `2015/16` from `Germany_2015_16.csv`) during the loading step.
+
+UEFA country coefficient data (used to construct league-season offsets) were retrieved from UEFA’s official “country rankings by season” page. The coefficients were collected by switching the webpage to a season-based table view and selecting the relevant year(s). The data source is:
+[https://www.uefa.com/nationalassociations/uefarankings/country/seasons](https://www.uefa.com/nationalassociations/uefarankings/country/seasons)
+
+From this interface, the table values for each season were recorded into a CSV file (`league_coefficients.csv`) with one row per season and one column per league/country (England, Spain, Italy, Germany, France). This coefficient table is then transformed into a long format within the preprocessing script and merged onto the match dataset by `(Season, League)`. 
+
+Finally, the entire retrieval is made reproducible through scripted preprocessing:
+
+* `script/00-data_loading.R` reads all downloaded match CSVs, standardises team names (trimming whitespace), parses dates, and constructs a unified raw match table.
+* `script/01-data_cleaning.R` reshapes the UEFA coefficient table into league-season offsets, joins offsets onto matches, enforces basic validity checks (non-missing key fields), and saves cleaned outputs to `data/clean/` (both `.rds` for type-stable reuse and `.csv` for inspection).
 
 
 ## Comparison with Established Football Rating Systems
@@ -601,8 +625,12 @@ worst_opta <- comp %>%
   )
 ```
 
-```{r tbl-3rank-compare, echo=FALSE, message=FALSE, warning=FALSE}
-
+```{r}
+#| label: tbl-3rank-compare
+#| tbl-cap: "Rank comparison of 3 ranking systems"
+#| echo: false
+#| message: false
+#| warning: false
 library(dplyr)
 library(knitr)
 

@@ -35,7 +35,7 @@ league_offsets <- league_coefs_wide %>%
     League = tolower(League)
   )
 
-# coefficient time series in long form (useful for plots)
+# coefficient time series in long form
 league_coefs_long <- league_coefs_wide %>%
   rename(Season = season) %>%
   pivot_longer(
