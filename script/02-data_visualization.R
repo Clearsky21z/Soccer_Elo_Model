@@ -177,7 +177,14 @@ p5 <- ggplot(coefs_plot, aes(x = SeasonStartDate, y = coefficient, colour = Leag
     y = "UEFA country coefficient",
     colour = "Country"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 9)
+  )
+
 
 ggsave(
   filename = file.path(fig_dir, "uefa_coefficients_by_league.png"),

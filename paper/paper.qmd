@@ -1,17 +1,17 @@
 ---
-title: "A Global Elo Rating Model for Europe’s Big Five Leagues"
-subtitle: "Bayern Munich ranks #1 with Elo 1402 across 163 teams"
+title: "Evaluating Europe's Big Five Football Leagues"
+subtitle: "A Global Elo Rating Model of 163 teams (2015/16 to 2025/26)"
 author: 
   - John Zhang
-thanks: "Code and data are available at: https://github.com/Clearsky21z/Soccer_Elo_Model"
+thanks: "Code and data are available at: <https://github.com/Clearsky21z/Soccer_Elo_Model>"
 date: today
 date-format: long
-abstract: ""
+abstract: |
+  Comparing football club strength across Europe is difficult because league tables are not directly comparable and performance changes over time. This paper builds a single Elo-based rating model for domestic matches in Europe’s Big Five leagues from 2015/16 to the partial 2025/26 season, using season-to-season shrinkage, recency-weighted updates, and hyperparameter tuning via a relevance-weighted Brier score. The fitted model produces match-outcome probabilities (overall Brier score = 0.159) and a cross-league ranking of 163 clubs, with end-of-sample Elo ratings spanning roughly 860–1402 and Bayern Munich ranked 1st at about 1402. These results matter because they provide a transparent, interpretable way to compare club strength across leagues on a common scale and to generate probability forecasts, while clarifying how much of “who is strongest” depends on recent form versus longer-run performance.
 format: pdf
 toc: true
 number-sections: true
 bibliography: references.bib
-
 ---
 
 \newpage
