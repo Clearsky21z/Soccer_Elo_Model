@@ -48,9 +48,5 @@ The repository is organized as follows:
   * `final_ratings_global.csv`: Final club Elo table (used in paper tables).
   * `fdb_opta_ranking.csv`: FootballDatabase/Opta within-set ranks used for comparison.
 
-* **project config**
-
-  * `Soccer_Elo_Model.Rproj`: RStudio project file.
-
 
 ## License
