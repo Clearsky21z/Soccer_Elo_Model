@@ -14,7 +14,7 @@ The repository is organized as follows:
 
   * `raw/`: Raw input data files.
 
-    * `england/`: Raw match CSVs by season (football-data.co.uk).
+    * `england/`: Raw match CSVs by season.
     * `spain/`: Raw match CSVs by season.
     * `italy/`: Raw match CSVs by season.
     * `germany/`: Raw match CSVs by season.
@@ -33,7 +33,7 @@ The repository is organized as follows:
   * `00-data_loading.R`: Loads raw match CSVs and creates a unified match table.
   * `01-data_cleaning.R`: Cleans matches, constructs UEFA-based offsets, and saves cleaned outputs.
   * `02-data_visualization.R`: Generates figures and saves them to `data/figures/`.
-  * `03-data_model.R`: Loads the ELO model and produce final rankings.
+  * `03-data_model.R`: Loads the ELO model and produce final ratings.
 
 * **paper/**
 
