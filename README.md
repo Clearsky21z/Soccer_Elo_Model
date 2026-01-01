@@ -33,15 +33,13 @@ The repository is organized as follows:
   * `00-data_loading.R`: Loads raw match CSVs and creates a unified match table.
   * `01-data_cleaning.R`: Cleans matches, constructs UEFA-based offsets, and saves cleaned outputs.
   * `02-data_visualization.R`: Generates figures and saves them to `data/figures/`.
-  * *(Other scripts may fit/tune the Elo model and export final outputs.)*
+  * `03-data_model.R`: Loads the ELO model and produce final rankings.
 
 * **paper/**
 
   * `paper.qmd`: Main Quarto source file for the paper.
   * `references.bib`: Bibliography used by the paper.
   * `paper.pdf`: Rendered PDF output.
-  * `paper.html`: Rendered HTML output.
-  * `paper_files/`: Quarto supporting files for the HTML output.
 
 * **project outputs (top-level)**
 
